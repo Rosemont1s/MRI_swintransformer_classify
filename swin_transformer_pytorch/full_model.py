@@ -51,14 +51,17 @@ class MRIParallelClassificationNetwork(nn.Module):
         )
 
     def forward(self, x, mask):
-        # 组合MRI图像和mask
-        combined_input = torch.cat([x, mask], dim=1)
+        # 组合MRI图像和mask [batch, 5, depth, height, width]
+        combined_input = torch.cat([x, mask], dim=1)  # 原代码
 
-        # Swin Transformer特征提取
-        # 注意：需要调整输入维度以匹配Swin Transformer
-        combined_input = combined_input.permute(0, 2, 3, 4, 1)
+        # 将深度维度合并到通道中 [batch, 5*depth, height, width]
+        batch, _, depth, h, w = combined_input.shape
+        combined_input = combined_input.permute(0, 2, 3, 4, 1)  # [batch, depth, h, w, channels]
+        combined_input = combined_input.reshape(batch, depth * h, w, -1)  # [batch, (depth*h), w, channels]
+        combined_input = combined_input.permute(0, 3, 1, 2)  # [batch, channels, (depth*h), w]
+
+        # Swin Transformer 特征提取
         features = self.swin_transformer(combined_input)
-
         # 特征处理
         processed_features = self.feature_processor(features)
 
