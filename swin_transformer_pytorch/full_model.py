@@ -1,98 +1,94 @@
 import torch
 import torch.nn as nn
-from .swin_transformer import SwinTransformer, swin_b  # 从您提供的文件导入
+import torch.nn.functional as F
+
+# 导入 Swin Transformer
+from swin_transformer import SwinTransformer3D, swin_t
 
 
-class MRIParallelClassificationNetwork(nn.Module):
+class MRIClassificationNetwork(nn.Module):
     def __init__(self,
-                 num_classes_1=2,
-                 num_classes_2=2,
-                 channels=5,  # 4 MRI + 1 mask
-                 hidden_dim=128,
-                 layers=(2, 2, 18, 2),
-                 heads=(4, 8, 16, 32),
-                 window_size=7):
-        super(MRIParallelClassificationNetwork, self).__init__()
+                 num_input_channels=4,
+                 swin_variant='3d',
+                 num_classes1=2,
+                 num_classes2=2,
+                 window_size=7,
+                 relative_pos_embedding=True):
+        super().__init__()
 
-        # 自定义Swin Transformer
-        self.swin_transformer = SwinTransformer(
-            channels=channels,
-            hidden_dim=hidden_dim,
-            layers=layers,
-            heads=heads,
+        # 初始卷积层，融合 MR 图像和 mask
+        self.input_conv = nn.Conv3d(num_input_channels + 1, num_input_channels, kernel_size=3, padding=1)
+
+        # 3D Swin Transformer
+        self.swin = SwinTransformer3D(
+            channels=num_input_channels,
             window_size=window_size,
-            num_classes=hidden_dim * 8  # 为特征提取准备
+            relative_pos_embedding=relative_pos_embedding
         )
 
-        # 移除原始分类头
-        self.swin_transformer.mlp_head = nn.Identity()
+        # 移除原分类头
+        self.swin.mlp_head = nn.Identity()
 
-        # 特征处理层
-        self.feature_processor = nn.Sequential(
-            nn.LayerNorm(hidden_dim * 8),
-            nn.Linear(hidden_dim * 8, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5)
-        )
+        # 特征维度
+        swin_output_dim = self.swin.stage4.patch_partition.downsample.out_channels * 8
 
         # 两个独立的分类头
-        self.classifier_1 = nn.Sequential(
-            nn.Linear(512, 256),
+        self.classification1 = nn.Sequential(
+            nn.LayerNorm(swin_output_dim),
+            nn.Linear(swin_output_dim, 256),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, num_classes_1)
+            nn.Dropout(0.5),
+            nn.Linear(256, num_classes1)
         )
 
-        self.classifier_2 = nn.Sequential(
-            nn.Linear(512, 256),
+        self.classification2 = nn.Sequential(
+            nn.LayerNorm(swin_output_dim),
+            nn.Linear(swin_output_dim, 256),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, num_classes_2)
+            nn.Dropout(0.5),
+            nn.Linear(256, num_classes2)
         )
 
     def forward(self, x, mask):
-        # 组合MRI图像和mask [batch, 5, depth, height, width]
-        combined_input = torch.cat([x, mask], dim=1)  # 原代码
+        # x: [4, 240, 240, 155]
+        # mask: [240, 240, 155]
 
-        # 将深度维度合并到通道中 [batch, 5*depth, height, width]
-        batch, _, depth, h, w = combined_input.shape
-        combined_input = combined_input.permute(0, 2, 3, 4, 1)  # [batch, depth, h, w, channels]
-        combined_input = combined_input.reshape(batch, depth * h, w, -1)  # [batch, (depth*h), w, channels]
-        combined_input = combined_input.permute(0, 3, 1, 2)  # [batch, channels, (depth*h), w]
+        # 添加 batch 维度并融合 mask
+        x = x.unsqueeze(0)  # [1, 4, 240, 240, 155]
+        mask = mask.unsqueeze(0).unsqueeze(0) # [1, 1, 240, 240, 155]
 
-        # Swin Transformer 特征提取
-        features = self.swin_transformer(combined_input)
-        # 特征处理
-        processed_features = self.feature_processor(features)
+        # 融合输入
+        x_combined = torch.cat([x, mask], dim=1)  # [1, 5, 240, 240, 155]
 
-        # 两个独立的分类输出
-        output_1 = self.classifier_1(processed_features)
-        output_2 = self.classifier_2(processed_features)
+        # 预处理
+        x_processed = self.input_conv(x_combined)  # [1, 4, 240, 240, 155]
 
-        return output_1, output_2
+        # Swin Transformer
+        swin_features = self.swin(x_processed)
+
+        # 分类
+        output1 = self.classification1(swin_features)
+        output2 = self.classification2(swin_features)
+
+        return output1, output2
 
 
-# 模型初始化和使用示例
-def main():
-    # 创建模型实例
-    model = MRIParallelClassificationNetwork(
-        num_classes_1=2,  # 第一个分类任务
-        num_classes_2=2,  # 第二个分类任务
-        channels=5,  # 4 MRI + 1 mask通道
-        hidden_dim=128,  # 与Swin-B配置一致
-        layers=(2, 2, 18, 2),
-        heads=(4, 8, 16, 32)
-    )
+# 测试模型
+def test_model():
+    model = MRIClassificationNetwork()
 
-    # 随机生成输入数据
-    mri_data = torch.randn(4, 4, 240, 240, 155)  # [batch_size, channels, depth, height, width]
-    mask_data = torch.randn(4, 1, 240, 240, 155)
+    # 测试输入
+    x = torch.randn(4, 240, 240, 155)  # 4 MR 图像
+    mask = torch.randn(240, 240, 155)  # Mask
 
     # 前向传播
-    output_1, output_2 = model(mri_data, mask_data)
-    print("Output 1 shape:", output_1.shape)
-    print("Output 2 shape:", output_2.shape)
+    output1, output2 = model(x, mask)
+
+    print("Input X shape:", x.shape)
+    print("Mask shape:", mask.shape)
+    print("Output 1 shape:", output1.shape)
+    print("Output 2 shape:", output2.shape)
 
 
 if __name__ == "__main__":
-    main()
+    test_model()
