@@ -1,106 +1,3 @@
-# import os
-# import pandas as pd
-# import re
-#
-#
-# def extract_min_number(s):
-#     # 提取所有连续数字部分
-#     s=str(s)
-#     numbers = re.findall(r'\d+', s)
-#     if not numbers:
-#         return None  # 或 raise ValueError("字符串中未找到数字")
-#     # 转换为整数并取最小值
-#     return min(map(int, numbers))
-#
-#
-# def standardize_roman(text):
-#     # 定义需替换的字符映射
-#     replace_map = {
-#         'l': 'I',    # 小写字母L → I
-#         '1': 'I',    # 数字1 → I
-#         'Ⅰ': 'I',    # Unicode罗马数字一 → I
-#         'ⅰ': 'I'     # Unicode小写罗马数字一 → I
-#     }
-#     for old_char, new_char in replace_map.items():
-#         text = text.replace(old_char, new_char)
-#     return text
-# def convert_who_grade(grade):
-#     """
-#     将 WHO 分级中的罗马数字或阿拉伯数字统一转换为阿拉伯数字。
-#     支持输入类型：整数、浮点数、字符串（如 "III", "2"）。
-#     """
-#     roman_mapping = {'I': 1, 'II': 2, 'III': 3}
-#     grade=str(grade).strip().upper()
-#     grade = standardize_roman(grade)
-#     if grade in roman_mapping:
-#         return roman_mapping[grade]
-#     else:
-#         try:
-#             return int(grade)
-#         except ValueError:
-#             return None
-#
-# def clean_dict(data_dict):
-#     clean_data = {
-#         k: v for k, v in data_dict.items()
-#         if not (pd.isna(v['Ki67']) or pd.isna(v['WHO']))
-#     }
-#     return clean_data
-# list_gx = pd.DataFrame(pd.read_excel("./gx.xlsx",sheet_name='Sheet1'))
-# list_mr8 = pd.DataFrame(pd.read_excel("./mr8.xlsx",sheet_name='glioma'))
-# list_mr8 = list_mr8[list_mr8['病理分类'] == ('脑膜瘤' or '脑膜瘤术后复发')]
-# list_mr12 = pd.DataFrame(pd.read_excel("./mr12.xlsx",sheet_name='glioma'))
-# list_mr12 = list_mr12[list_mr12['病理分类'] == ('脑膜瘤' or '脑膜瘤术后复发')]
-#
-#
-# list_gx['Ki67_check'] = [extract_min_number(i) for i in list_gx['Ki67']]
-# list_gx['WHO_check'] = [convert_who_grade(i) for i in list_gx['WHO分级']]
-# dict_gx = {
-#     num1: {'Ki67': ki67, 'WHO': who}
-#     for num1, ki67, who in zip(
-#         list_gx['住院号'],
-#         list_gx['Ki67_check'],
-#         list_gx['WHO_check']
-#     )
-# }
-# dict_gx=clean_dict(dict_gx)
-# list_mr8['Ki67_check'] = [extract_min_number(i) for i in list_mr8['Ki67']]
-# list_mr8['WHO_check'] = [convert_who_grade(i) for i in list_mr8['WHO分级']]
-# dict_mr8 = {
-#     num1: {'Ki67': ki67, 'WHO': who}
-#     for num1, ki67, who in zip(
-#         list_mr8['编号'],
-#         list_mr8['Ki67_check'],
-#         list_mr8['WHO_check']
-#     )
-# }
-# dict_mr8=clean_dict(dict_mr8)
-# list_mr12['Ki67_check'] = [extract_min_number(i) for i in list_mr12['Ki67（%）']]
-# list_mr12['WHO_check'] = [convert_who_grade(i) for i in list_mr12['WHO分级']]
-# dict_mr12 = {
-#     num1: {'Ki67': ki67, 'WHO': who}
-#     for num1, ki67, who in zip(
-#         list_mr12['编号'],
-#         list_mr12['Ki67_check'],
-#         list_mr12['WHO_check']
-#     )
-# }
-# dict_mr12=clean_dict(dict_mr12)
-#
-# print(dict_mr12)
-# print(dict_mr8)
-# print(dict_gx)
-#
-#
-#
-# index={}
-# with open("./index.txt", encoding="utf-8") as f:
-#     for i in f.readlines():
-#         origin=i.split(' -> ')[0]
-#         new=i.split(' -> ')[1].strip()
-#         index[new]=origin
-#     f.close()
-
 import os
 import pandas as pd
 import re
@@ -162,31 +59,112 @@ def load_index_mapping(file_path):
                 index_map[parts[1]] = parts[0]
     return index_map
 
+def calculate_ki67_stats(data):
+    # 提取所有Ki67值
+    ki67_values = [subject['Ki67'] for subject in data.values()]
 
-# 读取 Excel 数据
-list_gx = pd.read_excel("./gx.xlsx", sheet_name='Sheet1')
-list_mr8 = pd.read_excel("./mr8.xlsx", sheet_name='glioma')
-list_mr12 = pd.read_excel("./mr12.xlsx", sheet_name='glioma')
+    # 计算均数
+    mean = sum(ki67_values) / len(ki67_values)
 
-# 仅保留脑膜瘤和脑膜瘤术后复发病例
-list_mr8 = list_mr8[list_mr8['病理分类'].isin(['脑膜瘤', '脑膜瘤术后复发'])]
-list_mr12 = list_mr12[list_mr12['病理分类'].isin(['脑膜瘤', '脑膜瘤术后复发'])]
+    # 计算中位数
+    sorted_values = sorted(ki67_values)
+    n = len(sorted_values)
+    mid = n // 2
 
-# 处理各数据集
-processor_gx = MeningiomaDataProcessor(list_gx, '住院号', 'Ki67', 'WHO分级')
-dict_gx = processor_gx.process()
+    if n % 2 == 1:
+        median = sorted_values[mid]
+    else:
+        median = (sorted_values[mid - 1] + sorted_values[mid]) / 2
 
-processor_mr8 = MeningiomaDataProcessor(list_mr8, '编号', 'Ki67', 'WHO分级')
-dict_mr8 = processor_mr8.process()
+    return mean, median
 
-processor_mr12 = MeningiomaDataProcessor(list_mr12, '编号', 'Ki67（%）', 'WHO分级')
-dict_mr12 = processor_mr12.process()
+def get_processed_label_dictlist():
+    # 读取 Excel 数据
+    list_gx = pd.read_excel("./gx.xlsx", sheet_name='Sheet1')
+    list_mr8 = pd.read_excel("./mr8.xlsx", sheet_name='glioma')
+    list_mr12 = pd.read_excel("./mr12.xlsx", sheet_name='glioma')
 
-print(dict_mr12)
-print(dict_mr8)
-print(dict_gx)
+    # 仅保留脑膜瘤和脑膜瘤术后复发病例
+    list_mr8 = list_mr8[list_mr8['病理分类'].isin(['脑膜瘤', '脑膜瘤术后复发'])]
+    list_mr12 = list_mr12[list_mr12['病理分类'].isin(['脑膜瘤', '脑膜瘤术后复发'])]
 
-# 读取 index 映射
-index_map = load_index_mapping("./index.txt")
-print(index_map)
+    # 处理各数据集
+    processor_gx = MeningiomaDataProcessor(list_gx, '住院号', 'Ki67', 'WHO分级')
+    dict_gx = processor_gx.process()
 
+    processor_mr8 = MeningiomaDataProcessor(list_mr8, '编号', 'Ki67', 'WHO分级')
+    dict_mr8 = processor_mr8.process()
+
+    processor_mr12 = MeningiomaDataProcessor(list_mr12, '编号', 'Ki67（%）', 'WHO分级')
+    dict_mr12 = processor_mr12.process()
+    dict_gx = {str(key): value for key, value in dict_gx.items()}
+
+    # 读取 index 映射
+    index_map = load_index_mapping("./index.txt")
+
+    # print("mr12: 均数:{:.1f} 中位数:{:.1f}, mr8: 均数:{:.1f} 中位数:{:.1f}, gx: 均数:{:.1f} 中位数:{:.1f}".format(
+    #     *calculate_ki67_stats(dict_mr12),
+    #     *calculate_ki67_stats(dict_mr8),
+    #     *calculate_ki67_stats(dict_gx)
+    # ))
+    #
+    # all_ki67 = [v['Ki67'] for data in [dict_mr12, dict_mr8, dict_gx] for v in data.values()]
+    # total_mean = sum(all_ki67) / len(all_ki67)
+    # print(f"Ki67总均值：{total_mean:.1f}")
+    #mr12: 均数:3.4 中位数:3.0, mr8: 均数:4.3 中位数:3.0, gx: 均数:4.6 中位数:2.0
+    #Ki67总均值：4.2
+
+    def binarilized_dict(data):
+        threshold = 4.2
+        # 将 Ki67 进行二分类
+        for key in data:
+            data[key]['Ki67_binary'] = 1 if data[key]['Ki67'] > threshold else 0
+    binarilized_dict(dict_mr12)
+    binarilized_dict(dict_mr8)
+    binarilized_dict(dict_gx)
+    merged_dict = dict_mr12 | dict_mr8 | dict_gx
+    print(merged_dict)
+    print(index_map)
+    new_dict = {k: merged_dict[v] for k, v in index_map.items() if v in merged_dict}
+    print(new_dict)
+    print(len(new_dict))
+    return new_dict
+
+def export_to_csv(data_dict, output_file):
+    """将处理好的标签数据导出为CSV文件
+    
+    Args:
+        data_dict: 处理好的标签数据字典，格式为 {patient_id: {'WHO': who_grade, 'Ki67': ki67_value, ...}}
+        output_file: 输出CSV文件路径
+    """
+    # 准备CSV数据
+    csv_data = []
+    for patient_id, label_data in data_dict.items():
+        csv_data.append({
+            'patient_id': patient_id,
+            'who_grade': label_data['WHO'],
+            'ki67': label_data['Ki67']
+        })
+    
+    # 创建DataFrame并保存为CSV
+    df = pd.DataFrame(csv_data)
+    df.to_csv(output_file, index=False)
+    print(f"已将标签数据保存到 {output_file}，共 {len(df)} 条记录")
+    
+    # 打印统计信息
+    print("\n标签统计信息:")
+    print(f"WHO分级分布:\n{df['who_grade'].value_counts()}")
+    print(f"Ki67指数统计: 平均值={df['ki67'].mean():.2f}, 中位数={df['ki67'].median()}")
+    
+    return df
+
+if __name__ == '__main__':
+    # 获取处理好的标签数据
+    processed_labels = get_processed_label_dictlist()
+    
+    # 导出为CSV文件
+    output_dir = "d:/work/zhongzhong/MRI_swintransformer_classify/data/processed"
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, "labels.csv")
+    
+    export_to_csv(processed_labels, output_file)
