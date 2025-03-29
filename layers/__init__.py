@@ -1,1 +1,1 @@
-from layers.build import SwinTransformerForClassification
+from layers.build import MultiInputSwinTransformerForClassification
