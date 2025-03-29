@@ -1,9 +1,9 @@
 # MRI_swintransformer_classify
-A multi-modal Swin Transformer model for classifying Ki-67 index and WHO grade in gliomas
+A multi-modal Swin Transformer model for classifying Ki-67 index and WHO grade in meningiomas
 
 ## Project Overview
 
-This project utilizes multi-modal MRI data (T1, T2, T1c, FLAIR) and tumor segmentation masks to build a deep learning model based on Swin Transformer for automatic glioma classification. The model simultaneously predicts two important clinical indicators:
+This project utilizes multi-modal MRI data (T1, T2, T1c, FLAIR) and tumor segmentation masks to build a deep learning model based on Swin Transformer for automatic meningioma classification. The model simultaneously predicts two important clinical indicators:
 1. Ki-67 proliferation index (low/high)
 2. WHO tumor grade (grade 1-3)
 

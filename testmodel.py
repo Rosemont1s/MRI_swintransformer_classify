@@ -45,7 +45,8 @@ model_add = MultiInputSwinTransformerForClassification(
     fusion_method="add",
 )
 out_add1, out_add2 = model_add(inputs)
-print("加法融合输出形状:", out_add1.shape)
+print(out_add1)
+print(out_add2)
 
 # 注意力融合
 model_attn = MultiInputSwinTransformerForClassification(
@@ -57,4 +58,5 @@ model_attn = MultiInputSwinTransformerForClassification(
     fusion_method="attention",
 )
 out_attn1, out_attn2 = model_attn(inputs)
-print("注意力融合输出形状:", out_attn1.shape)
+print(out_attn1)
+print(out_attn2)
