@@ -16,7 +16,7 @@ class MultiModalMRIDataset(Dataset):
     def __init__(
             self, 
             data_dir, 
-            modalities=["t1", "t2", "t1ce", "flair", "mask"],
+            modalities=["t1w", "t2w", "t1c", "t2flair", "seg"],
             transform=None,
             target_size=(240, 240, 155),
             augment=True,
@@ -44,7 +44,7 @@ class MultiModalMRIDataset(Dataset):
         
         # 获取所有患者ID
         self.patient_ids = self._get_patient_ids()
-        
+
         # 加载标签
         self.labels = self._load_labels(label_file)
         
@@ -74,9 +74,12 @@ class MultiModalMRIDataset(Dataset):
     def _load_labels(self, label_file):
         """加载标签"""
         # 尝试从labels.csv加载标签
-        label_file_path = self.data_dir / label_file
+        label_file_path = Path(os.path.join(self.data_dir, label_file))
+        print(f"尝试加载标签文件: {label_file_path}")
+        
         if label_file_path.exists():
-            df = pd.read_csv(label_file_path)
+            # 使用dtype参数指定patient_id列为字符串类型，保留前导零
+            df = pd.read_csv(label_file_path, dtype={"patient_id": str})
             labels = {}
             
             for _, row in df.iterrows():
@@ -84,11 +87,10 @@ class MultiModalMRIDataset(Dataset):
                 
                 # 处理WHO分级 - 转换为二分类 (1-2为低级别，3为高级别)
                 who_grade = int(row["who_grade"]) if "who_grade" in df.columns else None
-                who_class = 1 if who_grade == 3 else 0 if who_grade in [1, 2] else None
+                who_class = 1 if who_grade == 2 else 0 if who_grade in [1] else None
                 
-                # 处理Ki67指数 - 转换为二分类 (阈值为4%)
-                ki67_index = float(row["ki67_index"]) if "ki67_index" in df.columns else None
-                ki67_class = 1 if ki67_index >= 4 else 0 if ki67_index < 4 else None
+                # 处理Ki67指数 - 直接使用ki67_binary列
+                ki67_class = int(row["ki67_binary"]) if "ki67_binary" in df.columns else None
                 
                 # 根据标签类型加载不同的标签
                 if self.label_type == "who" and who_class is not None:
@@ -101,63 +103,13 @@ class MultiModalMRIDataset(Dataset):
                         "ki67_index": ki67_class
                     }
             
+            print(f"从{label_file_path}加载了{len(labels)}个标签")
+            print(f"示例patient_id: {list(labels.keys())[:5]}")
             return labels
         else:
-            # 如果没有标签文件，尝试从process_label目录加载处理好的标签
-            try:
-                # 加载index.txt映射
-                index_map = self._load_index_mapping()
-                
-                # 尝试加载处理好的标签数据
-                from process_label.process_label import MeningiomaDataProcessor
-                
-                # 假设已经处理好的标签数据存在
-                processed_labels = {}
-                
-                # 将处理好的标签与患者ID关联
-                for patient_id in self.patient_ids:
-                    # 查找对应的原始ID
-                    original_id = index_map.get(patient_id)
-                    if original_id and original_id in processed_labels:
-                        label_data = processed_labels[original_id]
-                        
-                        # 转换WHO分级为二分类
-                        who_grade = label_data.get('WHO')
-                        who_class = 1 if who_grade == 3 else 0 if who_grade in [1, 2] else None
-                        
-                        # 转换Ki67指数为二分类
-                        ki67_index = label_data.get('Ki67')
-                        ki67_class = 1 if ki67_index >= 4 else 0 if ki67_index < 4 else None
-                        
-                        # 根据标签类型加载不同的标签
-                        if self.label_type == "who" and who_class is not None:
-                            processed_labels[patient_id] = who_class
-                        elif self.label_type == "ki67" and ki67_class is not None:
-                            processed_labels[patient_id] = ki67_class
-                        elif self.label_type == "both" and who_class is not None and ki67_class is not None:
-                            processed_labels[patient_id] = {
-                                "who_grade": who_class,
-                                "ki67_index": ki67_class
-                            }
-                
-                return processed_labels
-            except Exception as e:
-                print(f"警告: 无法加载处理好的标签数据: {e}")
-                print("创建随机标签用于测试")
-                
-                # 创建随机标签（仅用于测试）
-                random_labels = {}
-                for patient_id in self.patient_ids:
-                    if self.label_type == "who":
-                        random_labels[patient_id] = random.randint(0, 1)  # 二分类WHO分级
-                    elif self.label_type == "ki67":
-                        random_labels[patient_id] = random.randint(0, 1)  # 二分类Ki67指数
-                    else:  # both
-                        random_labels[patient_id] = {
-                            "who_grade": random.randint(0, 1),
-                            "ki67_index": random.randint(0, 1)
-                        }
-                return random_labels
+            print(f"找不到标签文件: {label_file_path}")
+        print("无法找到标签文件，创建随机标签用于测试")
+        return {}
     
     def _load_index_mapping(self):
         """加载index.txt映射关系"""
@@ -277,8 +229,8 @@ class MultiModalMRIDataset(Dataset):
             label = torch.tensor(who_label, dtype=torch.long)
             
             # 如果需要分别返回两个标签，可以取消下面的注释
-            # return data_tensors, (torch.tensor(who_label, dtype=torch.long), 
-            #                       torch.tensor(ki67_label, dtype=torch.long))
+            return data_tensors, (torch.tensor(who_label, dtype=torch.long), 
+                                  torch.tensor(ki67_label, dtype=torch.long))
         else:
             label = self.labels[patient_id]
             label = torch.tensor(label, dtype=torch.long)
@@ -286,4 +238,51 @@ class MultiModalMRIDataset(Dataset):
         return data_tensors, label
 
 if __name__ == "__main__":
-    test_tensor, label=MultiModalMRIDataset(data_dir='./data')
+    # 测试数据集
+    data_dir = 'd:/work/zhongzhong/MRI_swintransformer_classify/data'
+    label_file = 'labels.csv'
+    
+    # 检查数据目录和标签文件是否存在
+    if not os.path.exists(data_dir):
+        print(f"警告: 数据目录不存在: {data_dir}")
+    
+    # 检查几个可能的标签文件位置
+
+    
+    # 测试Ki67标签
+    dataset = MultiModalMRIDataset(
+        data_dir=data_dir,
+        label_type="ki67",
+        label_file=label_file
+    )
+    
+    # 打印数据集信息
+    print(f"数据集大小: {len(dataset)}")
+    
+    # 获取第一个样本
+    if len(dataset) > 0:
+        data_tensors, label = dataset[0]
+        print(f"样本形状: {[tensor.shape for tensor in data_tensors]}")
+        print(f"标签: {label}")
+        
+        # 统计标签分布
+        label_counts = {}
+        for i in range(len(dataset)):
+            _, label = dataset[i]
+            label_val = label.item()
+            label_counts[label_val] = label_counts.get(label_val, 0) + 1
+        
+        print(f"标签分布: {label_counts}")
+    else:
+        print("数据集为空，请检查数据目录和标签文件")
+    
+    # 测试both模式
+    dataset_both = MultiModalMRIDataset(
+        data_dir='d:/work/zhongzhong/MRI_swintransformer_classify/data',
+        label_type="both"
+    )
+    
+    if len(dataset_both) > 0:
+        data_tensors, (who_label, ki67_label) = dataset_both[0]
+        print(f"\n测试both模式:")
+        print(f"WHO标签: {who_label}, Ki67标签: {ki67_label}")

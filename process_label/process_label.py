@@ -167,4 +167,4 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, "labels.csv")
     
-    export_to_csv(processed_labels, output_file)
+    # export_to_csv(processed_labels, output_file)
