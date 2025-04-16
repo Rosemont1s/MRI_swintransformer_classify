@@ -103,7 +103,7 @@ class MultiInputSwinTransformerForClassification(nn.Module):
         # 分类器
         self.classifier1 = nn.Sequential(
             nn.Dropout(p=classifier_drop_rate),
-            nn.Linear(out_channels, 3),
+            nn.Linear(out_channels, 2),
             # nn.Softmax(dim=1) #使用nn.CrossEntropyLoss()时，不需要将输出经过softmax层
         )
         self.classifier2 = nn.Sequential(

@@ -57,6 +57,9 @@ def load_index_mapping(file_path):
             parts = line.strip().split(' -> ')
             if len(parts) == 2:
                 index_map[parts[1]] = parts[0]
+    for key in index_map:
+        index_map[key] = index_map[key].split('_')[0]
+        index_map[key] = index_map[key].split(' ')[0]
     return index_map
 
 def calculate_ki67_stats(data):
@@ -83,10 +86,10 @@ def get_processed_label_dictlist():
     list_gx = pd.read_excel("./gx.xlsx", sheet_name='Sheet1')
     list_mr8 = pd.read_excel("./mr8.xlsx", sheet_name='glioma')
     list_mr12 = pd.read_excel("./mr12.xlsx", sheet_name='glioma')
-
     # 仅保留脑膜瘤和脑膜瘤术后复发病例
-    list_mr8 = list_mr8[list_mr8['病理分类'].isin(['脑膜瘤', '脑膜瘤术后复发'])]
-    list_mr12 = list_mr12[list_mr12['病理分类'].isin(['脑膜瘤', '脑膜瘤术后复发'])]
+    list_mr8 = list_mr8[list_mr8['病理分类'].isin(['脑膜瘤', '脑膜瘤术后复发', '脑膜瘤术后残留', '脑膜瘤术后'])]
+    list_mr12 = list_mr12[list_mr12['病理分类'].isin(['脑膜瘤', '脑膜瘤术后复发', '脑膜瘤术后残留', '脑膜瘤术后'])]
+
 
     # 处理各数据集
     processor_gx = MeningiomaDataProcessor(list_gx, '住院号', 'Ki67', 'WHO分级')
@@ -115,10 +118,14 @@ def get_processed_label_dictlist():
     #Ki67总均值：4.2
 
     def binarilized_dict(data):
-        threshold = 4.2
+        threshold = 5
         # 将 Ki67 进行二分类
         for key in data:
-            data[key]['Ki67_binary'] = 1 if data[key]['Ki67'] > threshold else 0
+            data[key]['Ki67_binary'] = 1 if data[key]['Ki67'] >= threshold else 0
+        threshold = 2
+        for key in data:
+            data[key]['WHO_binary'] = 1 if data[key]['WHO'] >= threshold else 0
+
     binarilized_dict(dict_mr12)
     binarilized_dict(dict_mr8)
     binarilized_dict(dict_gx)
@@ -128,6 +135,11 @@ def get_processed_label_dictlist():
     new_dict = {k: merged_dict[v] for k, v in index_map.items() if v in merged_dict}
     print(new_dict)
     print(len(new_dict))
+    #统计who
+    who_dict={'who1':0, 'who2':0, 'who3':0}
+    for key, value in new_dict.items():
+        who_dict['who{0}'.format(int(value['WHO']))] += 1
+    print(who_dict)
     return new_dict
 
 def export_to_csv(data_dict, output_file):
@@ -142,20 +154,14 @@ def export_to_csv(data_dict, output_file):
     for patient_id, label_data in data_dict.items():
         csv_data.append({
             'patient_id': patient_id,
-            'who_grade': label_data['WHO'],
-            'ki67': label_data['Ki67']
+            'who': label_data['WHO_binary'],
+            'ki67': label_data['Ki67_binary']
         })
     
     # 创建DataFrame并保存为CSV
     df = pd.DataFrame(csv_data)
     df.to_csv(output_file, index=False)
     print(f"已将标签数据保存到 {output_file}，共 {len(df)} 条记录")
-    
-    # 打印统计信息
-    print("\n标签统计信息:")
-    print(f"WHO分级分布:\n{df['who_grade'].value_counts()}")
-    print(f"Ki67指数统计: 平均值={df['ki67'].mean():.2f}, 中位数={df['ki67'].median()}")
-    
     return df
 
 if __name__ == '__main__':
@@ -167,4 +173,4 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, "labels.csv")
     
-    # export_to_csv(processed_labels, output_file)
+    export_to_csv(processed_labels, output_file)

@@ -43,10 +43,12 @@ class Config:
         self.clip_grad_norm = 1.0  # 梯度裁剪
         
         # 数据参数
-        self.data_dir = "data/processed"  # 数据目录
-        self.train_ratio = 0.7  # 训练集比例
-        self.val_ratio = 0.15  # 验证集比例
-        self.test_ratio = 0.15  # 测试集比例
+        self.data_dir = '/home/yankai/MRI_swintransformer_classify-main/data/data_with_seg' # 数据目录
+        self.label_file = "labels.csv"  # 标签文件
+        self.label_type = "both"  # 标签类型: "who", "ki67", "both"
+        self.train_ratio = 0.8  # 训练集比例
+        self.val_ratio = 0.1  # 验证集比例
+        self.test_ratio = 0.1  # 测试集比例
         self.num_workers = 4  # 数据加载线程数
         
         # 其他参数
@@ -74,7 +76,30 @@ def set_seed(seed):
 def get_dataloaders(config):
     """创建数据加载器"""
     # 创建数据集
-    dataset = MultiModalMRIDataset(config.data_dir)
+    dataset = MultiModalMRIDataset(
+        data_dir=config.data_dir,
+        label_type=config.label_type,
+        label_file=config.label_file,
+        augment=True,  # 训练集使用数据增强
+        target_size=config.img_size
+    )
+    
+    # 创建验证集和测试集（不使用数据增强）
+    val_dataset = MultiModalMRIDataset(
+        data_dir=config.data_dir,
+        label_type=config.label_type,
+        label_file=config.label_file,
+        augment=False,
+        target_size=config.img_size
+    )
+    
+    test_dataset = MultiModalMRIDataset(
+        data_dir=config.data_dir,
+        label_type=config.label_type,
+        label_file=config.label_file,
+        augment=False,
+        target_size=config.img_size
+    )
     
     # 划分数据集
     dataset_size = len(dataset)
@@ -98,7 +123,7 @@ def get_dataloaders(config):
     )
     
     val_loader = DataLoader(
-        dataset, 
+        val_dataset, 
         batch_size=config.batch_size,
         sampler=torch.utils.data.SubsetRandomSampler(val_indices),
         num_workers=config.num_workers,
@@ -106,7 +131,7 @@ def get_dataloaders(config):
     )
     
     test_loader = DataLoader(
-        dataset, 
+        test_dataset, 
         batch_size=config.batch_size,
         sampler=torch.utils.data.SubsetRandomSampler(test_indices),
         num_workers=config.num_workers,
@@ -143,15 +168,30 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, config, e
     """训练一个轮次"""
     model.train()
     total_loss = 0
-    all_preds1 = []
-    all_preds2 = []
-    all_labels = []
+    all_preds_who = []
+    all_preds_ki67 = []
+    all_labels_who = []
+    all_labels_ki67 = []
     
     pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.epochs} [Train]")
     for batch_idx, (inputs, labels) in enumerate(pbar):
         # 将输入和标签移动到设备上
         inputs = [x.to(device) for x in inputs]
-        labels = labels.to(device)
+        
+        # 处理标签
+        if config.label_type == "both":
+            who_label, ki67_label = labels
+            who_label = who_label.to(device)
+            ki67_label = ki67_label.to(device)
+        else:
+            # 单一标签类型
+            labels = labels.to(device)
+            if config.label_type == "who":
+                who_label = labels
+                ki67_label = None
+            else:  # ki67
+                who_label = None
+                ki67_label = labels
         
         # 清零梯度
         optimizer.zero_grad()
@@ -159,10 +199,20 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, config, e
         # 前向传播
         if config.use_amp:
             with autocast():
-                outputs1, outputs2 = model(inputs)
-                loss1 = criterion(outputs1, labels)
-                loss2 = criterion(outputs2, labels)
-                loss = (loss1 + loss2) / 2  # 两个分类器的平均损失
+                outputs_who, outputs_ki67 = model(inputs)
+                
+                # 计算损失
+                loss = 0
+                if who_label is not None:
+                    loss_who = criterion(outputs_who, who_label)
+                    loss += loss_who
+                
+                if ki67_label is not None:
+                    loss_ki67 = criterion(outputs_ki67, ki67_label)
+                    loss += loss_ki67
+                
+                if config.label_type == "both":
+                    loss = loss / 2  # 平均两个损失
                 
             # 反向传播
             scaler.scale(loss).backward()
@@ -176,10 +226,20 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, config, e
             scaler.step(optimizer)
             scaler.update()
         else:
-            outputs1, outputs2 = model(inputs)
-            loss1 = criterion(outputs1, labels)
-            loss2 = criterion(outputs2, labels)
-            loss = (loss1 + loss2) / 2  # 两个分类器的平均损失
+            outputs_who, outputs_ki67 = model(inputs)
+            
+            # 计算损失
+            loss = 0
+            if who_label is not None:
+                loss_who = criterion(outputs_who, who_label)
+                loss += loss_who
+            
+            if ki67_label is not None:
+                loss_ki67 = criterion(outputs_ki67, ki67_label)
+                loss += loss_ki67
+            
+            if config.label_type == "both":
+                loss = loss / 2  # 平均两个损失
             
             # 反向传播
             loss.backward()
@@ -195,13 +255,15 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, config, e
         total_loss += loss.item()
         
         # 获取预测结果
-        preds1 = torch.argmax(outputs1, dim=1).cpu().numpy()
-        preds2 = torch.argmax(outputs2, dim=1).cpu().numpy()
-        labels_np = labels.cpu().numpy()
+        if who_label is not None:
+            preds_who = torch.argmax(outputs_who, dim=1).cpu().numpy()
+            all_preds_who.extend(preds_who)
+            all_labels_who.extend(who_label.cpu().numpy())
         
-        all_preds1.extend(preds1)
-        all_preds2.extend(preds2)
-        all_labels.extend(labels_np)
+        if ki67_label is not None:
+            preds_ki67 = torch.argmax(outputs_ki67, dim=1).cpu().numpy()
+            all_preds_ki67.extend(preds_ki67)
+            all_labels_ki67.extend(ki67_label.cpu().numpy())
         
         # 更新进度条
         pbar.set_postfix({
@@ -210,53 +272,82 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, config, e
         })
     
     # 计算指标
-    acc1 = accuracy_score(all_labels, all_preds1)
-    acc2 = accuracy_score(all_labels, all_preds2)
+    metrics = {'loss': total_loss / len(train_loader)}
     
-    # 计算平均损失
-    avg_loss = total_loss / len(train_loader)
+    if who_label is not None:
+        metrics['who_acc'] = accuracy_score(all_labels_who, all_preds_who)
     
-    return avg_loss, acc1, acc2
+    if ki67_label is not None:
+        metrics['ki67_acc'] = accuracy_score(all_labels_ki67, all_preds_ki67)
+    
+    return metrics
 
 
 def validate(model, val_loader, criterion, device, config):
     """验证模型"""
     model.eval()
     total_loss = 0
-    all_preds1 = []
-    all_preds2 = []
-    all_labels = []
-    all_probs1 = []
-    all_probs2 = []
+    all_preds_who = []
+    all_preds_ki67 = []
+    all_labels_who = []
+    all_labels_ki67 = []
+    all_probs_who = []
+    all_probs_ki67 = []
     
     with torch.no_grad():
         pbar = tqdm(val_loader, desc="Validation")
         for inputs, labels in pbar:
             # 将输入和标签移动到设备上
             inputs = [x.to(device) for x in inputs]
-            labels = labels.to(device)
+            
+            # 处理标签
+            if config.label_type == "both":
+                who_label, ki67_label = labels
+                who_label = who_label.to(device)
+                ki67_label = ki67_label.to(device)
+            else:
+                # 单一标签类型
+                labels = labels.to(device)
+                if config.label_type == "who":
+                    who_label = labels
+                    ki67_label = None
+                else:  # ki67
+                    who_label = None
+                    ki67_label = labels
             
             # 前向传播
-            outputs1, outputs2 = model(inputs)
-            loss1 = criterion(outputs1, labels)
-            loss2 = criterion(outputs2, labels)
-            loss = (loss1 + loss2) / 2  # 两个分类器的平均损失
+            outputs_who, outputs_ki67 = model(inputs)
+            
+            # 计算损失
+            loss = 0
+            if who_label is not None:
+                loss_who = criterion(outputs_who, who_label)
+                loss += loss_who
+            
+            if ki67_label is not None:
+                loss_ki67 = criterion(outputs_ki67, ki67_label)
+                loss += loss_ki67
+            
+            if config.label_type == "both":
+                loss = loss / 2  # 平均两个损失
             
             # 统计
             total_loss += loss.item()
             
             # 获取预测结果
-            probs1 = F.softmax(outputs1, dim=1).cpu().numpy()
-            probs2 = F.softmax(outputs2, dim=1).cpu().numpy()
-            preds1 = np.argmax(probs1, axis=1)
-            preds2 = np.argmax(probs2, axis=1)
-            labels_np = labels.cpu().numpy()
+            if who_label is not None:
+                probs_who = F.softmax(outputs_who, dim=1).cpu().numpy()
+                preds_who = np.argmax(probs_who, axis=1)
+                all_preds_who.extend(preds_who)
+                all_labels_who.extend(who_label.cpu().numpy())
+                all_probs_who.extend(probs_who[:, 1])  # 假设正类的概率在第二列
             
-            all_preds1.extend(preds1)
-            all_preds2.extend(preds2)
-            all_labels.extend(labels_np)
-            all_probs1.extend(probs1[:, 1])  # 假设正类的概率在第二列
-            all_probs2.extend(probs2[:, 1])
+            if ki67_label is not None:
+                probs_ki67 = F.softmax(outputs_ki67, dim=1).cpu().numpy()
+                preds_ki67 = np.argmax(probs_ki67, axis=1)
+                all_preds_ki67.extend(preds_ki67)
+                all_labels_ki67.extend(ki67_label.cpu().numpy())
+                all_probs_ki67.extend(probs_ki67[:, 1])
             
             # 更新进度条
             pbar.set_postfix({
@@ -264,33 +355,21 @@ def validate(model, val_loader, criterion, device, config):
             })
     
     # 计算指标
-    acc1 = accuracy_score(all_labels, all_preds1)
-    acc2 = accuracy_score(all_labels, all_preds2)
-    precision1 = precision_score(all_labels, all_preds1, average='binary')
-    precision2 = precision_score(all_labels, all_preds2, average='binary')
-    recall1 = recall_score(all_labels, all_preds1, average='binary')
-    recall2 = recall_score(all_labels, all_preds2, average='binary')
-    f1_1 = f1_score(all_labels, all_preds1, average='binary')
-    f1_2 = f1_score(all_labels, all_preds2, average='binary')
-    auc1 = roc_auc_score(all_labels, all_probs1)
-    auc2 = roc_auc_score(all_labels, all_probs2)
+    metrics = {'loss': total_loss / len(val_loader)}
     
-    # 计算平均损失
-    avg_loss = total_loss / len(val_loader)
+    if who_label is not None and len(all_labels_who) > 0:
+        metrics['who_acc'] = accuracy_score(all_labels_who, all_preds_who)
+        metrics['who_precision'] = precision_score(all_labels_who, all_preds_who, average='binary')
+        metrics['who_recall'] = recall_score(all_labels_who, all_preds_who, average='binary')
+        metrics['who_f1'] = f1_score(all_labels_who, all_preds_who, average='binary')
+        metrics['who_auc'] = roc_auc_score(all_labels_who, all_probs_who)
     
-    metrics = {
-        'loss': avg_loss,
-        'acc1': acc1,
-        'acc2': acc2,
-        'precision1': precision1,
-        'precision2': precision2,
-        'recall1': recall1,
-        'recall2': recall2,
-        'f1_1': f1_1,
-        'f1_2': f1_2,
-        'auc1': auc1,
-        'auc2': auc2
-    }
+    if ki67_label is not None and len(all_labels_ki67) > 0:
+        metrics['ki67_acc'] = accuracy_score(all_labels_ki67, all_preds_ki67)
+        metrics['ki67_precision'] = precision_score(all_labels_ki67, all_preds_ki67, average='binary')
+        metrics['ki67_recall'] = recall_score(all_labels_ki67, all_preds_ki67, average='binary')
+        metrics['ki67_f1'] = f1_score(all_labels_ki67, all_preds_ki67, average='binary')
+        metrics['ki67_auc'] = roc_auc_score(all_labels_ki67, all_probs_ki67)
     
     return metrics
 
@@ -352,14 +431,23 @@ def main():
     parser = argparse.ArgumentParser(description='Train a multi-modal MRI classifier')
     parser.add_argument('--config', type=str, default='', help='Path to config file')
     parser.add_argument('--resume', type=str, default='', help='Path to checkpoint to resume from')
+    parser.add_argument('--data_dir', type=str, default='', help='Path to data directory')
+    parser.add_argument('--label_file', type=str, default='labels.csv', help='Name of label file')
+    parser.add_argument('--label_type', type=str, default='both', choices=['who', 'ki67', 'both'], help='Type of label to use')
     args = parser.parse_args()
     
     # 创建配置
     config = Config()
     
-    # 如果指定了恢复训练的检查点
+    # 更新配置
     if args.resume:
         config.resume = args.resume
+    if args.data_dir:
+        config.data_dir = args.data_dir
+    if args.label_file:
+        config.label_file = args.label_file
+    if args.label_type:
+        config.label_type = args.label_type
     
     # 设置随机种子
     set_seed(config.seed)
@@ -390,66 +478,93 @@ def main():
     if config.resume:
         start_epoch, best_metrics = load_checkpoint(model, optimizer, scheduler, config)
     
-    # 获取最佳验证指标
-    best_val_acc = best_metrics.get('val_acc1', 0)
+    # 记录最佳验证指标
+    best_val_metric = best_metrics.get('val_metric', 0.0)
     
     # 训练循环
     for epoch in range(start_epoch, config.epochs):
         # 训练一个轮次
-        train_loss, train_acc1, train_acc2 = train_one_epoch(
-            model, train_loader, criterion, optimizer, config.device, config, epoch, scaler
-        )
+        train_metrics = train_one_epoch(model, train_loader, criterion, optimizer, config.device, config, epoch, scaler)
         
         # 更新学习率
         if scheduler is not None:
-            if config.scheduler == 'plateau':
-                scheduler.step(train_loss)
-            else:
-                scheduler.step()
+            scheduler.step()
         
-        # 打印训练信息
-        print(f"Epoch {epoch+1}/{config.epochs} - Train Loss: {train_loss:.4f}, "
-              f"Train Acc1: {train_acc1:.4f}, Train Acc2: {train_acc2:.4f}")
-        
-        # 每隔一定轮次验证一次
+        # 每隔一定轮次评估一次
         if (epoch + 1) % config.eval_freq == 0:
             # 验证
             val_metrics = validate(model, val_loader, criterion, config.device, config)
             
-            # 打印验证信息
-            print(f"Epoch {epoch+1}/{config.epochs} - Val Loss: {val_metrics['loss']:.4f}, "
-                  f"Val Acc1: {val_metrics['acc1']:.4f}, Val Acc2: {val_metrics['acc2']:.4f}, "
-                  f"Val AUC1: {val_metrics['auc1']:.4f}, Val AUC2: {val_metrics['auc2']:.4f}")
+            # 打印指标
+            print(f"Epoch {epoch+1}/{config.epochs}")
+            print(f"Train Loss: {train_metrics['loss']:.4f}")
+            if 'who_acc' in train_metrics:
+                print(f"Train WHO Acc: {train_metrics['who_acc']:.4f}")
+            if 'ki67_acc' in train_metrics:
+                print(f"Train Ki67 Acc: {train_metrics['ki67_acc']:.4f}")
             
-            # 检查是否是最佳模型
-            is_best = val_metrics['acc1'] > best_val_acc
+            print(f"Val Loss: {val_metrics['loss']:.4f}")
+            if 'who_acc' in val_metrics:
+                print(f"Val WHO Acc: {val_metrics['who_acc']:.4f}")
+                print(f"Val WHO F1: {val_metrics['who_f1']:.4f}")
+                print(f"Val WHO AUC: {val_metrics['who_auc']:.4f}")
+            if 'ki67_acc' in val_metrics:
+                print(f"Val Ki67 Acc: {val_metrics['ki67_acc']:.4f}")
+                print(f"Val Ki67 F1: {val_metrics['ki67_f1']:.4f}")
+                print(f"Val Ki67 AUC: {val_metrics['ki67_auc']:.4f}")
+            
+            # 确定当前模型是否是最佳模型
+            current_val_metric = 0.0
+            if config.label_type == "both":
+                if 'who_acc' in val_metrics and 'ki67_acc' in val_metrics:
+                    current_val_metric = (val_metrics['who_acc'] + val_metrics['ki67_acc']) / 2
+            elif config.label_type == "who" and 'who_acc' in val_metrics:
+                current_val_metric = val_metrics['who_acc']
+            elif config.label_type == "ki67" and 'ki67_acc' in val_metrics:
+                current_val_metric = val_metrics['ki67_acc']
+            
+            is_best = current_val_metric > best_val_metric
             if is_best:
-                best_val_acc = val_metrics['acc1']
-                print(f"New best model with Val Acc1: {best_val_acc:.4f}")
+                best_val_metric = current_val_metric
+                print(f"New best model with val metric: {best_val_metric:.4f}")
             
             # 保存检查点
             save_checkpoint(
-                model, optimizer, scheduler, epoch,
-                {**val_metrics, 'train_loss': train_loss, 'train_acc1': train_acc1, 'train_acc2': train_acc2},
-                config, is_best
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=epoch,
+                metrics={
+                    'train': train_metrics,
+                    'val': val_metrics,
+                    'val_metric': current_val_metric
+                },
+                config=config,
+                is_best=is_best
             )
     
-    # 训练结束后，在测试集上评估最佳模型
-    print("Training completed. Loading best model for testing...")
+    # 加载最佳模型进行测试
     best_checkpoint = torch.load(os.path.join(config.save_dir, 'best.pth'), map_location=config.device)
     model.load_state_dict(best_checkpoint['model'])
     
     # 测试
     test_metrics = test(model, test_loader, criterion, config.device, config)
     
-    # 打印测试结果
+    # 打印测试指标
     print("\nTest Results:")
     print(f"Test Loss: {test_metrics['loss']:.4f}")
-    print(f"Test Acc1: {test_metrics['acc1']:.4f}, Test Acc2: {test_metrics['acc2']:.4f}")
-    print(f"Test Precision1: {test_metrics['precision1']:.4f}, Test Precision2: {test_metrics['precision2']:.4f}")
-    print(f"Test Recall1: {test_metrics['recall1']:.4f}, Test Recall2: {test_metrics['recall2']:.4f}")
-    print(f"Test F1-1: {test_metrics['f1_1']:.4f}, Test F1-2: {test_metrics['f1_2']:.4f}")
-    print(f"Test AUC1: {test_metrics['auc1']:.4f}, Test AUC2: {test_metrics['auc2']:.4f}")
+    if 'who_acc' in test_metrics:
+        print(f"Test WHO Acc: {test_metrics['who_acc']:.4f}")
+        print(f"Test WHO Precision: {test_metrics['who_precision']:.4f}")
+        print(f"Test WHO Recall: {test_metrics['who_recall']:.4f}")
+        print(f"Test WHO F1: {test_metrics['who_f1']:.4f}")
+        print(f"Test WHO AUC: {test_metrics['who_auc']:.4f}")
+    if 'ki67_acc' in test_metrics:
+        print(f"Test Ki67 Acc: {test_metrics['ki67_acc']:.4f}")
+        print(f"Test Ki67 Precision: {test_metrics['ki67_precision']:.4f}")
+        print(f"Test Ki67 Recall: {test_metrics['ki67_recall']:.4f}")
+        print(f"Test Ki67 F1: {test_metrics['ki67_f1']:.4f}")
+        print(f"Test Ki67 AUC: {test_metrics['ki67_auc']:.4f}")
 
 
 if __name__ == "__main__":

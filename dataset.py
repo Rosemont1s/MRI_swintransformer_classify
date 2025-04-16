@@ -16,7 +16,7 @@ class MultiModalMRIDataset(Dataset):
     def __init__(
             self, 
             data_dir, 
-            modalities=["t1w", "t2w", "t1c", "t2flair", "seg"],
+            modalities=["T1W", "T2W", "T1C", "T2F", "seg"],
             transform=None,
             target_size=(240, 240, 155),
             augment=True,
@@ -61,14 +61,13 @@ class MultiModalMRIDataset(Dataset):
                 # 检查是否包含所有需要的模态
                 has_all_modalities = True
                 for modality in self.modalities:
-                    modality_files = list(patient_dir.glob(f"*{modality}*.nii.gz"))
+                    modality_files = list(patient_dir.glob(f"*{modality}*"))
                     if not modality_files:
                         has_all_modalities = False
                         break
                 
                 if has_all_modalities:
                     patient_ids.append(patient_dir.name)
-        
         return sorted(patient_ids)
     
     def _load_labels(self, label_file):
@@ -84,23 +83,23 @@ class MultiModalMRIDataset(Dataset):
             
             for _, row in df.iterrows():
                 patient_id = row["patient_id"]
-                
-                # 处理WHO分级 - 转换为二分类 (1-2为低级别，3为高级别)
-                who_grade = int(row["who_grade"]) if "who_grade" in df.columns else None
-                who_class = 1 if who_grade == 2 else 0 if who_grade in [1] else None
-                
+                who_class = row['who']
                 # 处理Ki67指数 - 直接使用ki67_binary列
-                ki67_class = int(row["ki67_binary"]) if "ki67_binary" in df.columns else None
+                ki67_class = row['ki67']
                 
                 # 根据标签类型加载不同的标签
                 if self.label_type == "who" and who_class is not None:
-                    labels[patient_id] = who_class
+                    labels[patient_id] = {
+                        "who": who_class
+                    }
                 elif self.label_type == "ki67" and ki67_class is not None:
-                    labels[patient_id] = ki67_class
+                    labels[patient_id] = {
+                        "ki67": ki67_class
+                    }
                 elif self.label_type == "both" and who_class is not None and ki67_class is not None:
                     labels[patient_id] = {
-                        "who_grade": who_class,
-                        "ki67_index": ki67_class
+                        "who": who_class,
+                        "ki67": ki67_class
                     }
             
             print(f"从{label_file_path}加载了{len(labels)}个标签")
@@ -146,8 +145,29 @@ class MultiModalMRIDataset(Dataset):
         """预处理数据"""
         # 调整大小到目标尺寸
         if data.shape != self.target_size:
+            # 计算缩放因子
             zoom_factors = [t / s for t, s in zip(self.target_size, data.shape)]
-            data = ndimage.zoom(data, zoom_factors, order=1)
+            
+            # 使用精确的缩放因子进行缩放
+            data = ndimage.zoom(data, zoom_factors, order=1, mode='nearest')
+            
+            # 确保尺寸完全匹配目标尺寸
+            if data.shape != self.target_size:
+                # 如果缩放后尺寸仍不匹配，进行裁剪或填充
+                temp = np.zeros(self.target_size, dtype=data.dtype)
+                
+                # 计算每个维度的复制范围
+                copy_shape = [min(s, t) for s, t in zip(data.shape, self.target_size)]
+                
+                # 复制数据
+                slices_src = tuple(slice(0, s) for s in copy_shape)
+                slices_dst = tuple(slice(0, s) for s in copy_shape)
+                temp[slices_dst] = data[slices_src]
+                
+                data = temp
+                
+            # 确认尺寸
+            assert data.shape == self.target_size, f"预处理后的形状 {data.shape} 与目标形状 {self.target_size} 不匹配"
         
         # 归一化
         if np.max(data) > 0:
@@ -160,29 +180,66 @@ class MultiModalMRIDataset(Dataset):
         if not self.augment:
             return data_list
         
-        # 随机翻转
-        if random.random() > 0.5:
-            data_list = [np.flip(data, axis=0) for data in data_list]
+        # 不进行随机翻转，而是使用更适合医学图像的增强方法
         
-        # 随机旋转
+        # 随机旋转（小角度，保持解剖结构基本不变）
         if random.random() > 0.5:
-            angle = random.uniform(-10, 10)
-            data_list = [ndimage.rotate(data, angle, axes=(0, 1), reshape=False) for data in data_list]
+            angle = random.uniform(-5, 5)  # 减小旋转角度范围
+            data_list = [ndimage.rotate(data, angle, axes=(0, 1), reshape=False, order=1) for data in data_list]
         
-        # 随机缩放
+        # 随机缩放（轻微缩放）
         if random.random() > 0.5:
-            scale = random.uniform(0.9, 1.1)
+            scale = random.uniform(0.95, 1.05)  # 减小缩放范围
             data_list = [ndimage.zoom(data, (scale, scale, 1), order=1) for data in data_list]
         
         # 随机亮度和对比度调整（仅对MRI序列，不对掩码）
         if random.random() > 0.5:
-            brightness = random.uniform(0.9, 1.1)
-            contrast = random.uniform(0.9, 1.1)
+            brightness = random.uniform(0.95, 1.05)
+            contrast = random.uniform(0.95, 1.05)
             for i in range(len(data_list) - 1):  # 不包括最后一个（掩码）
                 data = data_list[i]
                 data = data * contrast + brightness
                 data = np.clip(data, 0, 1)
                 data_list[i] = data
+        
+        # 随机添加高斯噪声（更适合医学图像）
+        if random.random() > 0.5:
+            for i in range(len(data_list) - 1):  # 不包括掩码
+                noise = np.random.normal(0, 0.01, data_list[i].shape)  # 低强度噪声
+                data_list[i] = np.clip(data_list[i] + noise, 0, 1)
+        
+        # 确保所有数据都是目标尺寸
+        for i in range(len(data_list)):
+            if data_list[i].shape != self.target_size:
+                # 如果增强后尺寸变化，重新调整到目标尺寸
+                temp = np.zeros(self.target_size, dtype=data_list[i].dtype)
+                
+                # 计算每个维度的复制范围
+                copy_shape = [min(s, t) for s, t in zip(data_list[i].shape, self.target_size)]
+                
+                # 复制数据
+                slices_src = tuple(slice(0, s) for s in copy_shape)
+                slices_dst = tuple(slice(0, s) for s in copy_shape)
+                temp[slices_dst] = data_list[i][slices_src]
+                
+                # 如果需要放大，使用插值
+                if any(s < t for s, t in zip(data_list[i].shape, self.target_size)):
+                    zoom_factors = [t / s for t, s in zip(self.target_size, data_list[i].shape)]
+                    temp = ndimage.zoom(data_list[i], zoom_factors, order=1, mode='nearest')
+                    
+                    # 确保尺寸完全匹配
+                    if temp.shape != self.target_size:
+                        temp2 = np.zeros(self.target_size, dtype=temp.dtype)
+                        copy_shape = [min(s, t) for s, t in zip(temp.shape, self.target_size)]
+                        slices_src = tuple(slice(0, s) for s in copy_shape)
+                        slices_dst = tuple(slice(0, s) for s in copy_shape)
+                        temp2[slices_dst] = temp[slices_src]
+                        temp = temp2
+                
+                data_list[i] = temp
+                
+                # 确认尺寸
+                assert data_list[i].shape == self.target_size, f"增强后的形状 {data_list[i].shape} 与目标形状 {self.target_size} 不匹配"
         
         return data_list
     
@@ -198,7 +255,7 @@ class MultiModalMRIDataset(Dataset):
         # 加载所有模态
         data_list = []
         for modality in self.modalities:
-            modality_files = list(patient_dir.glob(f"*{modality}*.nii.gz"))
+            modality_files = list(patient_dir.glob(f"*{modality}*"))
             if modality_files:
                 data = self._load_nifti(modality_files[0])
                 data = self._preprocess(data)
@@ -210,6 +267,18 @@ class MultiModalMRIDataset(Dataset):
         if self.augment:
             data_list = self._augment(data_list)
         
+        # 最终检查所有数据的尺寸
+        for i, data in enumerate(data_list):
+            if data.shape != self.target_size:
+                print(f"警告: 模态 {i} 的形状 {data.shape} 与目标形状 {self.target_size} 不匹配，正在调整...")
+                # 强制调整到目标尺寸
+                temp = np.zeros(self.target_size, dtype=data.dtype)
+                copy_shape = [min(s, t) for s, t in zip(data.shape, self.target_size)]
+                slices_src = tuple(slice(0, s) for s in copy_shape)
+                slices_dst = tuple(slice(0, s) for s in copy_shape)
+                temp[slices_dst] = data[slices_src]
+                data_list[i] = temp
+        
         # 转换为张量
         data_tensors = []
         for data in data_list:
@@ -217,38 +286,35 @@ class MultiModalMRIDataset(Dataset):
             data = np.expand_dims(data, axis=0)
             tensor = torch.from_numpy(data).float()
             data_tensors.append(tensor)
+            # 最终检查张量形状
+            expected_shape = (1,) + self.target_size
+            assert tensor.shape == expected_shape, f"张量形状 {tensor.shape} 与预期形状 {expected_shape} 不匹配"
         
         # 获取标签
         if self.label_type == "both":
             # 返回两个标签
-            who_label = self.labels[patient_id]["who_grade"]
-            ki67_label = self.labels[patient_id]["ki67_index"]
-            
-            # 在训练脚本中，我们假设两个标签是相同的
-            # 实际应用中，您可能需要返回两个不同的标签
-            label = torch.tensor(who_label, dtype=torch.long)
-            
-            # 如果需要分别返回两个标签，可以取消下面的注释
+            who_label = self.labels[patient_id]["who"]
+            ki67_label = self.labels[patient_id]["ki67"]
             return data_tensors, (torch.tensor(who_label, dtype=torch.long), 
                                   torch.tensor(ki67_label, dtype=torch.long))
-        else:
-            label = self.labels[patient_id]
+        elif self.label_type == "ki67":
+            label = self.labels[patient_id]["ki67"]
             label = torch.tensor(label, dtype=torch.long)
-        
-        return data_tensors, label
+            return data_tensors, label
+        elif self.label_type == "who":
+            label = self.labels[patient_id]["who"]
+            label = torch.tensor(label, dtype=torch.long)
+            return data_tensors, label
 
 if __name__ == "__main__":
     # 测试数据集
-    data_dir = 'd:/work/zhongzhong/MRI_swintransformer_classify/data'
+    data_dir = '/home/yankai/MRI_swintransformer_classify-main/data/data_with_seg'
     label_file = 'labels.csv'
     
     # 检查数据目录和标签文件是否存在
     if not os.path.exists(data_dir):
         print(f"警告: 数据目录不存在: {data_dir}")
-    
-    # 检查几个可能的标签文件位置
 
-    
     # 测试Ki67标签
     dataset = MultiModalMRIDataset(
         data_dir=data_dir,
@@ -268,9 +334,12 @@ if __name__ == "__main__":
         # 统计标签分布
         label_counts = {}
         for i in range(len(dataset)):
-            _, label = dataset[i]
-            label_val = label.item()
-            label_counts[label_val] = label_counts.get(label_val, 0) + 1
+            try:
+                _, label = dataset[i]
+                label_val = label.item()
+                label_counts[label_val] = label_counts.get(label_val, 0) + 1
+            except Exception as e:
+                print("error when getting label using index{}".format(i))
         
         print(f"标签分布: {label_counts}")
     else:
@@ -278,7 +347,7 @@ if __name__ == "__main__":
     
     # 测试both模式
     dataset_both = MultiModalMRIDataset(
-        data_dir='d:/work/zhongzhong/MRI_swintransformer_classify/data',
+        data_dir='/home/yankai/MRI_swintransformer_classify-main/data/data_with_seg',
         label_type="both"
     )
     
